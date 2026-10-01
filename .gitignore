@@ -1,0 +1,6 @@
+# meeting data is confidential and local — never in the repo
+data/
+__pycache__/
+*.pyc
+.env
+.apikey

@@ -1,0 +1,36 @@
+# Project registry entry: what the extractor may tag, and where the executor looks.
+name: nsd-proposal
+description: Per-seller 3-page IndiaMART proposal deck (HTML -> PDF), built for the NSD team.
+repo: /mnt/c/Users/Imart/Desktop/Issues/proposal
+default_branch: main
+people:
+  - Malayaj          # builds the deck
+  - manager          # reviews; name not recorded
+render: python3 deck3.py {glid}
+verify: python3 truefit.py deck3_{glid}.html
+# What the executor runs after Claude Code edits (must work without VPN -> cached data)
+verify_cmd: >-
+  python3 -c "import pickle,deck3,pathlib;d=pickle.load(open('cache/d4213238.pkl','rb'));
+  pathlib.Path('deck3_4213238.html').write_text(deck3.render(d),encoding='utf-8')"
+  && python3 truefit.py deck3_4213238.html
+
+# Fixed vocabulary. The extractor must pick from these; the executor maps them to files.
+components:
+  page1.header:        deck3.py — masthead, "Proposal for", kicker
+  page1.hero:          deck3.py — h1 + one-line description
+  page1.stats:         deck3.py — 23.4 Cr / 88 Lakh / 1.15 Cr strip
+  page1.how:           deck3.py — "How it generates business for you"
+  page1.buyleads:      deck3.py — BuyLeads spotlight (.spot) and flow graphic
+  page1.footer:        deck3.py — legacy line / 30 years
+  page1.whitespace:    deck3.py — spacing and fill on page 1
+  page2.categories:    deck3.py — "You deal in" + edit link
+  page2.business:      deck3.py + app.py — monthly buyers / value / AOV
+  page2.buyleads:      deck3.py + app.py (SAMPLE_LEAD, SAMPLE_MINI) — recent BuyLeads block
+  page3.plans:         app.py (PLANS) + deck3.py — plan cards and prices
+  page3.inclusions:    deck3.py — Vyapar / Live Keeping block
+  page3.testimonials:  deck3.py (TESTIMONIALS) + app.py (VIDEOS)
+  page3.cta:           deck3.py — Start growing now / Join now / expert phone
+  design.general:      cross-page look and feel (fonts, colours, layout)
+  data:                queries and thresholds in app.py / deck3.enrich
+  process:             how the team works, timelines, who does what
+  other:               anything that does not fit above
