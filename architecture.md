@@ -262,3 +262,25 @@ systems whose behaviour must be assumed, and the failure mode is confident, plau
 edits. Rule: a repo gets an executor only if it has a verify gate (tests) and a `CLAUDE.md`;
 otherwise it gets a ticket. Positioning: *remembers and tracks everything; executes only what
 it can verify.*
+
+---
+
+## Later — a decision model (Jev / TypeSafe) for the judgement calls
+
+Jev takes a *state* plus typed questions (Choice / Score / Noul = truth 0–1) and returns
+typed answers with probabilities — no text, no parsing. Everywhere the pipeline asks Claude
+for one word and then parses it is a candidate. Not for transcription, extraction, the MoM or
+Claude Code's work: Jev answers questions, it does not write.
+
+| step | today | with Jev |
+|---|---|---|
+| Reconcile — reversal judge | one Claude call per decision, free-text label; ~60% of per-meeting cost | Choice over {same, refines, reverses, unrelated} + Noul "new undoes earlier"; show low-margin cases as *uncertain* instead of picking one |
+| Dependency resolution | Claude reads transcript, says resolved/open/dropped | Noul "transcript shows this dependency is delivered", thresholded, probability shown in "Waiting on others" |
+| Actionable type + routing | chosen inside the extraction call | Choice over types + Noul "small and verifiable enough to automate"; below the floor → human, not Claude Code. This is the gate that decides whether the agent acts |
+| Owner assignment | a name or "unassigned", guessed | Score each attendee as owner; `unassigned` when nobody clears the bar |
+| Execution safety (later) | verify command only | Noul "this diff does only what the instruction asked" over instruction + diff — an extra gate, not a replacement |
+
+Order: reversal judge first (biggest cost, cleanest fixture: the Monday/Friday Maximiser
+pair), then routing. Precondition to test before anything: Jev on Hinglish/Devanagari state
+text — the judge's inputs are Hindi quotes. Plan: `judge_jev.py` behind a `JUDGE=jev` switch,
+run both judges over the 33 real decisions, compare agreement and cost before switching.
