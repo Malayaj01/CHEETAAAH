@@ -226,3 +226,39 @@ already in place and refused to touch a file `CLAUDE.md` marked off-limits; appl
 second (`deck3.py`), rendered with live data, passed the page-fit check, and left a note
 about what it deliberately did not change. The "already_applied" status exists because of
 that run.
+
+---
+
+## Expansion — context providers, and what the agent must not do
+
+### Context providers (`providers/`)
+Knowledge the organisation already has, read before extraction, **enrichment only**:
+
+| question | source |
+|---|---|
+| who was in the room | calendar event attendees (Google Calendar / Outlook) |
+| who is "Amit" | directory (Workspace / Entra / Slack profiles) |
+| which project | calendar title + attendees → project registry |
+| who owns `page3.plans` | repo index, `CODEOWNERS`, recent committers |
+| discussed since last meeting | chat (Google Chat / Slack) in the project channel |
+
+One interface (`attendees`, `person`, `repos`, `owners`, `messages`), one adapter per source.
+IndiaMART profile: Google Calendar + Workspace + Google Chat + GitHub. Generic profile:
+Outlook/Teams or Slack + GitLab. A provider can never create a decision; chat-derived
+candidates pass the same approval gate. First adapter to build: calendar attendees — it fixes
+the weakest link (who said what) with one OAuth.
+
+### Two statuses the pipeline needed
+- `needs_design` — new work with no existing component. Never executed; becomes a ticket with
+  verbatim, nearby decision history and open questions. Humans invent, the agent maintains.
+- `blocked_on_external` — someone else must act first (another team's API). Stored in the
+  `dependency` table, drafted as an ask to the owner, carried into every following MoM as
+  "still open since …" until a meeting resolves or drops it.
+
+### Repo access: knowledge, not action
+Indexing every org repo with owners improves routing and dependency tracking. It does **not**
+make cross-repo or new-feature execution safe: risk grows with the number of files and
+systems whose behaviour must be assumed, and the failure mode is confident, plausible, wrong
+edits. Rule: a repo gets an executor only if it has a verify gate (tests) and a `CLAUDE.md`;
+otherwise it gets a ticket. Positioning: *remembers and tracks everything; executes only what
+it can verify.*

@@ -12,7 +12,7 @@ import config
 import llm
 
 Type = Literal["copy_change", "delete_block", "add_block", "data_change",
-               "design_change", "external", "unknown"]
+               "design_change", "external", "needs_design", "unknown"]
 
 
 class Decision(BaseModel):
@@ -31,6 +31,8 @@ class Actionable(BaseModel):
     said_by: str
     owner: str = Field(description="a name from the transcript, or 'unassigned'")
     due: Optional[str] = None
+    blocks: Optional[str] = Field(default=None, description="for external items: what work on "
+                                  "our side waits for this, e.g. 'page3.plans dynamic pricing'")
     confidence: float = Field(ge=0, le=1)
 
 
@@ -60,7 +62,12 @@ ACTIONABLE TYPES:
   add_block     — add a new block or section
   data_change   — change a number, query, threshold or data source
   design_change — layout, spacing, colour, font, graphics
-  external      — work outside the codebase (get videos, ask someone, decide pricing)
+  external      — work by someone outside this project/team (another team's API, get videos,
+                  a decision someone else must take). Set `owner` to them and `blocks` to
+                  what on our side waits for it. If the meeting says the external thing is
+                  already delivered, the remaining work is OURS — classify that instead.
+  needs_design  — something new to build or a design/product question with no existing
+                  component to change; a human must design it first
   unknown       — could not classify
 
 RULES
@@ -132,10 +139,14 @@ def _chunks(transcript):
     return [" ".join(words[i:i + size]) for i in range(0, len(words), size)]
 
 
-def extract(transcript: str, project: str, model=config.EXTRACT_MODEL):
+def extract(transcript: str, project: str, model=config.EXTRACT_MODEL, context=None):
     """Returns (Extraction, cost). Long transcripts are split into parts, extracted
     separately (each call fits the gateway's per-minute token limit) and merged."""
     p = load_project(project)
+    if context and context.get("attendees"):
+        p = dict(p, people=(p.get("people") or []) + [
+            a if isinstance(a, str) else f"{a.get('name')} ({a.get('team') or a.get('email', '')})"
+            for a in context["attendees"]])
     parts = _chunks(transcript)
     results, total = [], 0.0
     for i, part in enumerate(parts, 1):

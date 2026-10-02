@@ -94,12 +94,16 @@ def api_meeting(mid: str):
 
 @app.post("/api/meetings/{mid}/approve")
 async def approve(mid: str, body: dict):
-    """body = {"decisions": {id: "accept"|"reject"}, "actionables": {idx: "accept"|"reject"|"not_mine"}}"""
+    """body = {"decisions": {id: "accept"|"reject"|""}, "actionables": {idx: "accept"|"reject"|"not_mine"|""},
+               "edits": {"a:<idx>": "new instruction", "d:<id>": "new instruction"}}
+    An empty choice clears a previous one (unapprove). Edited instructions are what the
+    executor will apply; the original stays in extraction.json."""
     r = load(mid)
     decisions = body.get("decisions") or {}
     memory.approve(r["meta"]["project"], mid,
                    [k for k, v in decisions.items() if v == "accept"],
-                   [k for k, v in decisions.items() if v == "reject"])
+                   [k for k, v in decisions.items() if v == "reject"],
+                   [k for k, v in decisions.items() if v == ""])
     body["saved"] = time.strftime("%Y-%m-%d %H:%M:%S")
     (pipeline.mdir(mid) / "approval.json").write_text(json.dumps(body, indent=1))
     pipeline.status(mid, state="approved")
@@ -125,6 +129,20 @@ def api_execute(mid: str):
             import traceback
             pipeline.status(mid, state="approved", error=traceback.format_exc()[-1500:])
     threading.Thread(target=go, daemon=True).start()
+    return {"ok": True}
+
+
+@app.post("/api/meetings/{mid}/retry")
+def api_retry(mid: str):
+    """Re-run from the last completed step (keeps transcript/extraction already on disk)."""
+    r = load(mid)
+    d = pipeline.mdir(mid)
+    src = next((f for f in d.iterdir() if f.name.startswith(("recording", "transcript-upload"))), None) \
+        or (d / "transcript.txt")
+    m = r["meta"]
+    pipeline.status(mid, state="queued", step="queued", error=None)
+    threading.Thread(target=pipeline.run, args=(src, m["project"], mid, m["date"], m["title"]),
+                     kwargs={"resume": True}, daemon=True).start()
     return {"ok": True}
 
 
@@ -264,7 +282,7 @@ rb.onclick=async()=>{
 
 MEETING_JS = """
 const MID=__MID__;const STEPS=['transcribing','extracting','reconciling','done'];
-const choice={decisions:{},actionables:{}};
+const choice={decisions:{},actionables:{},edits:{}};
 function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function seg(kind,key,opts){return `<div class="seg">`+opts.map(o=>`<button type="button" class="${o[2]}" data-k="${kind}" data-id="${key}" data-v="${o[0]}">${o[1]}</button>`).join('')+`</div>`}
 function render(r){
@@ -274,9 +292,11 @@ function render(r){
     h+=`<div class="card"><b>Processing…</b><div class="steps">`+STEPS.slice(0,3).map((s,k)=>`<span class="${k<i?'done':k===i?'on':''}">${s}</span>`).join('')+`</div>
     <div class="muted" style="margin-top:8px">${st.words?st.words.toLocaleString()+' words transcribed. ':''}Audio takes about 1 minute per 4 minutes of recording. This page refreshes itself.</div></div>`;
     document.getElementById('app').innerHTML=h;setTimeout(load,5000);return}
-  if(st.state==='failed'){h+=`<div class="card"><b>Failed</b><pre>${esc(st.error)}</pre></div>`;document.getElementById('app').innerHTML=h;return}
+  if(st.state==='failed'){h+=`<div class="card"><b>Failed</b><pre>${esc(st.error)}</pre><button class="btn b" id="retry">Retry from last completed step</button></div>`;document.getElementById('app').innerHTML=h;
+    document.getElementById('retry').onclick=async()=>{await fetch(`/api/meetings/${MID}/retry`,{method:'POST'});setTimeout(load,1000)};return}
   const ex=r.extraction,rc=r.reconcile||{stored:[],flags:[]},ap=r.approval;
-  if(ap){Object.assign(choice.decisions,ap.decisions||{});Object.assign(choice.actionables,ap.actionables||{})}
+  if(ap){Object.assign(choice.decisions,ap.decisions||{});Object.assign(choice.actionables,ap.actionables||{});Object.assign(choice.edits,ap.edits||{})}
+  const edit=(key,text)=>`<input class="ed" data-key="${key}" value="${esc(choice.edits[key]||text)}" style="margin-top:6px;font-size:13px${choice.edits[key]?';border-color:var(--amber)':''}" title="edit the instruction before approving">`;
   h+=`<div class="card"><div class="row"><span class="pill ${st.state==='approved'?'app':'ok'}">${st.state==='approved'?'Approved '+(ap&&ap.saved||''):'Awaiting your review'}</span>
     <span class="muted">${st.decisions} decisions · ${st.actionables} actionables · $${(st.cost||0).toFixed(2)}</span></div>
     <div class="sum" style="margin-top:10px">${esc(ex.summary)}</div></div>`;
@@ -289,13 +309,22 @@ function render(r){
   ex.decisions.forEach((d,i)=>{const s=rc.stored[i]||{};const rel={same:'restates earlier',refines:'refines earlier',reverses:'REVERSES earlier'}[s.relation];
     h+=`<div class="item${s.relation==='reverses'?' rev':''}"><div class="c">${d.component}${rel?' · '+rel:''}</div><div class="i">${esc(d.instruction)}</div>
     <q>“${esc(d.verbatim)}”</q><div class="who">${esc(d.said_by)} · confidence ${Math.round(d.confidence*100)}%</div>
-    ${seg('decisions',s.id,[['accept','Accept','a'],['reject','Reject','r']])}</div>`});
+    ${edit('d:'+s.id,d.instruction)}
+    ${seg('decisions',s.id,[['accept','Accept','a'],['reject','Reject','r'],['','Clear','n']])}</div>`});
   const groups={};ex.actionables.forEach((a,i)=>{(groups[a.owner||'unassigned']=groups[a.owner||'unassigned']||[]).push([a,i])});
   h+=`<h2>Actionables</h2>`;
   Object.keys(groups).sort((a,b)=>(a==='unassigned')-(b==='unassigned')||a.localeCompare(b)).forEach(o=>{h+=`<h2 style="font-size:14px;color:var(--muted)">${esc(o)}</h2>`;
     groups[o].forEach(([a,i])=>{h+=`<div class="item"><div class="c">${a.component} · ${a.type}${a.due?' · due '+esc(a.due):''}</div><div class="i">${esc(a.instruction)}</div>
-    <q>“${esc(a.verbatim)}”</q><div class="who">${esc(a.said_by)}</div>
-    ${seg('actionables',i,[['accept','Accept','a'],['reject','Reject','r'],['not_mine','Not mine','n']])}</div>`})});
+    <q>“${esc(a.verbatim)}”</q><div class="who">${esc(a.said_by)}${a.blocks?' · blocks: '+esc(a.blocks):''}</div>
+    ${edit('a:'+i,a.instruction)}
+    ${seg('actionables',i,[['accept','Accept','a'],['reject','Reject','r'],['not_mine','Not mine','n'],['','Clear','n']])}</div>`})});
+  const design=ex.actionables.filter(a=>a.type==='needs_design');
+  if(design.length){h+=`<h2>🧩 Needs design — new work, not automatable</h2>`+design.map(a=>`<div class="item"><div class="c">${a.component} · owner ${esc(a.owner)}</div><div class="i">${esc(a.instruction)}</div><q>“${esc(a.verbatim)}”</q></div>`).join('')}
+  const dp=rc.deps||{};
+  if((dp.new||[]).length||(dp.carried||[]).length||(dp.closed||[]).length){h+=`<h2>⏳ Waiting on others</h2>`;
+    (dp.new||[]).forEach(d=>{h+=`<div class="item"><div class="c">${esc(d.waiting_on)} · new today</div><div class="i">${esc(d.instruction)}</div>${d.blocks?`<div class="muted">blocks: ${esc(d.blocks)}</div>`:''}</div>`});
+    (dp.carried||[]).forEach(d=>{h+=`<div class="item rev"><div class="c">${esc(d.waiting_on)} · still open since ${d.since}</div><div class="i">${esc(d.instruction)}</div>${d.blocks?`<div class="muted">blocks: ${esc(d.blocks)}</div>`:''}</div>`});
+    (dp.closed||[]).forEach(d=>{h+=`<div class="item"><div class="c">${esc(d.waiting_on)} · ${d.status} today</div><div class="i" style="text-decoration:line-through">${esc(d.instruction)}</div><div class="muted">${esc(d.why)}</div></div>`})}
   if(ex.open_questions.length){h+=`<h2>Open questions</h2><div class="card"><ul class="oq">`+ex.open_questions.map(q=>`<li>${esc(q)}</li>`).join('')+`</ul></div>`}
   h+=`<div class="card"><b>People</b><div class="muted">${esc(ex.people.join(', '))}</div></div>`;
   const exn=r.execution;
@@ -313,8 +342,9 @@ function render(r){
   h+=`<div class="muted" style="margin:10px 0 30px;text-align:center"><a href="/api/meetings/${MID}/mom.md">MoM as text</a></div>`;
   document.getElementById('app').innerHTML=h;
   document.querySelectorAll('.seg button').forEach(b=>{const k=b.dataset.k,id=b.dataset.id;if(choice[k][id]===b.dataset.v)b.classList.add('on');
-    b.onclick=()=>{choice[k][id]=b.dataset.v;b.parentElement.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on')}});
+    b.onclick=()=>{choice[k][id]=b.dataset.v;b.parentElement.querySelectorAll('button').forEach(x=>x.classList.remove('on'));if(b.dataset.v)b.classList.add('on')}});
   document.getElementById('save').onclick=async()=>{const el=document.getElementById('smsg');el.textContent='saving…';
+    document.querySelectorAll('input.ed').forEach(x=>{const orig=x.getAttribute('value');if(x.value.trim()&&x.value!==orig)choice.edits[x.dataset.key]=x.value.trim();else if(x.value===orig)delete choice.edits[x.dataset.key]});
     const r=await fetch(`/api/meetings/${MID}/approve`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(choice)});
     el.textContent=r.ok?'Saved. Accepted decisions are now active in memory.':'failed: '+await r.text();if(r.ok)setTimeout(load,800)};
   const run=document.getElementById('run');if(run)run.onclick=async()=>{run.disabled=true;const el=document.getElementById('smsg');el.textContent='starting…';

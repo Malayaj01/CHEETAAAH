@@ -14,6 +14,8 @@ import config
 import extract
 import memory
 import mom
+import notify
+import providers
 
 TRANSCRIBER = pathlib.Path("/mnt/c/Users/Imart/Desktop/Issues/proposal/transcribe.py")
 AUDIO = {".aac", ".m4a", ".mp3", ".wav", ".ogg", ".opus", ".mp4", ".webm", ".3gp", ".amr"}
@@ -36,18 +38,27 @@ def transcribe(src, dest):
     return dest.read_text(encoding="utf-8")
 
 
-def run(src, project, meeting_id, date, title=None):
-    """src: audio file or transcript .txt. Returns the status dict."""
+def run(src, project, meeting_id, date, title=None, resume=False):
+    """src: audio file or transcript .txt. Returns the status dict.
+    resume=True reuses transcript.txt / extraction.json already on disk, so a failure
+    in a later step never repeats a six-minute transcription."""
     src = pathlib.Path(src)
     d = mdir(meeting_id)
     d.mkdir(parents=True, exist_ok=True)
     meta = {"id": meeting_id, "project": project, "date": date, "title": title or meeting_id,
             "source": src.name}
     (d / "meeting.json").write_text(json.dumps(meta, indent=1))
+    tpath, xpath = d / "transcript.txt", d / "extraction.json"
     try:
+        # context from providers (calendar attendees etc.) — enrichment only
+        ctx = providers.context(meta)
+        if ctx:
+            (d / "context.json").write_text(json.dumps(ctx, indent=1, ensure_ascii=False))
+
         status(meeting_id, state="running", step="transcribing", error=None)
-        tpath = d / "transcript.txt"
-        if src.suffix.lower() in AUDIO:
+        if resume and tpath.exists():
+            transcript = tpath.read_text(encoding="utf-8")
+        elif src.suffix.lower() in AUDIO:
             if src.parent != d:
                 shutil.copy(src, d / ("recording" + src.suffix.lower()))
             transcript = transcribe(src, tpath)
@@ -56,18 +67,29 @@ def run(src, project, meeting_id, date, title=None):
             tpath.write_text(transcript, encoding="utf-8")
         status(meeting_id, step="extracting", words=len(transcript.split()))
 
-        ex, cost = extract.extract(transcript, project)
-        (d / "extraction.json").write_text(ex.model_dump_json(indent=2), encoding="utf-8")
+        if resume and xpath.exists():
+            ex, cost = extract.Extraction.model_validate_json(xpath.read_text(encoding="utf-8")), 0.0
+        else:
+            ex, cost = extract.extract(transcript, project, context=ctx)
+            xpath.write_text(ex.model_dump_json(indent=2), encoding="utf-8")
         status(meeting_id, step="reconciling", cost=cost)
 
         stored, flags, jcost = memory.reconcile(project, meeting_id, date, ex.decisions)
-        (d / "reconcile.json").write_text(json.dumps({"stored": stored, "flags": flags},
-                                                     indent=1, ensure_ascii=False))
+        new, carried, closed, dcost = memory.track_dependencies(project, meeting_id, date,
+                                                                 ex.actionables, transcript)
+        deps = {"new": new, "carried": carried, "closed": closed}
+        (d / "reconcile.json").write_text(json.dumps({"stored": stored, "flags": flags,
+                                                      "deps": deps}, indent=1, ensure_ascii=False))
+        total = cost + jcost + dcost
         text = mom.render({"title": meta["title"], "date": date, "project": project},
-                          ex, stored, flags, cost + jcost)
+                          ex, stored, flags, total, deps)
         (d / "mom.md").write_text(text, encoding="utf-8")
-        return status(meeting_id, state="awaiting_approval", step="done", cost=cost + jcost,
-                      decisions=len(ex.decisions), actionables=len(ex.actionables),
-                      reversals=len(flags))
+        st = status(meeting_id, state="awaiting_approval", step="done", cost=total,
+                    decisions=len(ex.decisions), actionables=len(ex.actionables),
+                    reversals=len(flags), waiting=len(new) + len(carried))
+        notify.send(meeting_id, meta, st)
+        return st
     except Exception:
-        return status(meeting_id, state="failed", error=traceback.format_exc()[-2000:])
+        st = status(meeting_id, state="failed", error=traceback.format_exc()[-2000:])
+        notify.send(meeting_id, meta, st)
+        return st

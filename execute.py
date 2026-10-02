@@ -147,6 +147,9 @@ def execute(meeting_id, only=None):
         if a["type"] not in EXECUTABLE:
             results.append({"i": i, "status": "human", "why": f"type {a['type']} has no handler"})
             continue
+        edited = (ap.get("edits") or {}).get(f"a:{i}")
+        if edited:
+            a = dict(a, instruction=edited)
         print(f"[{i}] {a['type']} {a['component']}: {a['instruction']}")
         history = ""
         if hist.get(a["component"]):

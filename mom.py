@@ -3,7 +3,7 @@ page for Stage 1: every item carries its verbatim so it can be checked."""
 from collections import defaultdict
 
 
-def render(meeting, ex, stored, flags, cost):
+def render(meeting, ex, stored, flags, cost, deps=None):
     by_id = {s["id"]: s for s in stored}
     out = [f"# MoM — {meeting['title']}",
            f"{meeting['date']} · project `{meeting['project']}` · {meeting.get('duration', '')}",
@@ -41,6 +41,27 @@ def render(meeting, ex, stored, flags, cost):
             due = f" · due {a.due}" if a.due else ""
             out += [f"- [ ] **{a.component}** ({a.type}) — {a.instruction}{due}",
                     f"  - \"{a.verbatim}\" — {a.said_by}"]
+        out += [""]
+
+    design = [a for a in ex.actionables if a.type == "needs_design"]
+    if design:
+        out += ["## 🧩 Needs design — new work, not automatable"]
+        for a in design:
+            out += [f"- **{a.component}** — {a.instruction} · owner {a.owner}",
+                    f"  - \"{a.verbatim}\" — {a.said_by}"]
+        out += [""]
+    deps = deps or {}
+    if deps.get("new") or deps.get("carried") or deps.get("closed"):
+        out += ["## ⏳ Waiting on others"]
+        for d in deps.get("new", []):
+            out += [f"- **{d['waiting_on']}**: {d['instruction']}"
+                    + (f" — blocks *{d['blocks']}*" if d.get("blocks") else "") + " _(new today)_"]
+        for d in deps.get("carried", []):
+            out += [f"- **{d['waiting_on']}**: {d['instruction']}"
+                    + (f" — blocks *{d['blocks']}*" if d.get("blocks") else "")
+                    + f" _(still open since {d['since']})_"]
+        for d in deps.get("closed", []):
+            out += [f"- ~~{d['waiting_on']}: {d['instruction']}~~ — {d['status']} today: {d['why']}"]
         out += [""]
 
     if ex.open_questions:

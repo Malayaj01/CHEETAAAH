@@ -29,6 +29,19 @@ CREATE TABLE IF NOT EXISTS decision (
   created     TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS decision_pc ON decision(project, component, status);
+CREATE TABLE IF NOT EXISTS dependency (
+  id          TEXT PRIMARY KEY,
+  project     TEXT NOT NULL,
+  meeting_id  TEXT NOT NULL,            -- where it was first raised
+  since       TEXT NOT NULL,
+  waiting_on  TEXT NOT NULL,            -- person or team
+  instruction TEXT NOT NULL,
+  blocks      TEXT,                     -- what on our side waits for it
+  verbatim    TEXT,
+  status      TEXT NOT NULL DEFAULT 'open',   -- open | resolved | dropped
+  resolved_in TEXT,                     -- meeting id that closed it
+  created     TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -113,10 +126,16 @@ def reconcile(project, meeting_id, date, decisions, model=config.JUDGE_MODEL):
     return stored, flags, cost
 
 
-def approve(project, meeting_id, accepted_ids, rejected_ids=()):
+def approve(project, meeting_id, accepted_ids, rejected_ids=(), cleared_ids=()):
     """Apply the human's decision: accepted -> active (and supersede what they replace),
-    rejected -> rejected. Anything else stays 'proposed'."""
+    rejected -> rejected, cleared -> back to proposed (and un-supersede). Others untouched."""
     with connect() as c:
+        for i in cleared_ids:
+            c.execute("UPDATE decision SET status='proposed' WHERE id=? AND project=?", (i, project))
+            sup = c.execute("SELECT supersedes FROM decision WHERE id=?", (i,)).fetchone()
+            if sup and sup["supersedes"]:
+                c.execute("UPDATE decision SET status='active' WHERE id=? AND status='superseded'",
+                          (sup["supersedes"],))
         for i in accepted_ids:
             c.execute("UPDATE decision SET status='active' WHERE id=? AND project=?", (i, project))
             sup = c.execute("SELECT supersedes FROM decision WHERE id=?", (i,)).fetchone()
@@ -124,3 +143,59 @@ def approve(project, meeting_id, accepted_ids, rejected_ids=()):
                 c.execute("UPDATE decision SET status='superseded' WHERE id=?", (sup["supersedes"],))
         for i in rejected_ids:
             c.execute("UPDATE decision SET status='rejected' WHERE id=? AND project=?", (i, project))
+
+
+# ------------------------------------------------------------ dependencies ----
+RESOLVE = """Below are OPEN dependencies this team is waiting on, and today's meeting transcript.
+For each dependency say whether today's meeting shows it is now resolved (delivered / no longer
+needed), still open, or dropped (explicitly abandoned). Judge by meaning; quotes may be Hinglish.
+
+DEPENDENCIES:
+{deps}
+
+TRANSCRIPT (may be long; only the relevant parts matter):
+{transcript}
+
+Return ONLY JSON: {{"updates": [{{"id": "<id>", "status": "resolved|open|dropped", "why": "<one line>"}}]}}"""
+
+
+def open_dependencies(project):
+    with connect() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM dependency WHERE project=? AND status='open' ORDER BY since", (project,))]
+
+
+def track_dependencies(project, meeting_id, date, actionables, transcript, model=config.JUDGE_MODEL):
+    """Store today's external items as open dependencies; ask whether today's meeting
+    closed any earlier ones. Returns (new, carried, closed, cost)."""
+    cost = 0.0
+    earlier = open_dependencies(project)
+    closed = []
+    if earlier and transcript:
+        deps = "\n".join(json.dumps({k: e[k] for k in ("id", "since", "waiting_on", "instruction")},
+                                    ensure_ascii=False) for e in earlier)
+        j, cost = llm.chat_json([{"role": "user", "content":
+                                  RESOLVE.format(deps=deps, transcript=transcript[:60000])}],
+                                model, max_tokens=2000, label="deps: ")
+        with connect() as c:
+            for u in j.get("updates", []):
+                if u.get("status") in ("resolved", "dropped"):
+                    c.execute("UPDATE dependency SET status=?, resolved_in=? WHERE id=? AND project=?",
+                              (u["status"], meeting_id, u["id"], project))
+                    e = next((e for e in earlier if e["id"] == u["id"]), None)
+                    if e:
+                        closed.append({**e, "status": u["status"], "why": u.get("why", "")})
+    new = []
+    with connect() as c:
+        c.execute("DELETE FROM dependency WHERE project=? AND meeting_id=?", (project, meeting_id))
+        for a in actionables:
+            if a.type != "external":
+                continue
+            row = {"id": uuid.uuid4().hex[:12], "project": project, "meeting_id": meeting_id,
+                   "since": date, "waiting_on": a.owner or "unassigned", "instruction": a.instruction,
+                   "blocks": a.blocks, "verbatim": a.verbatim, "status": "open", "resolved_in": None}
+            c.execute("INSERT INTO dependency VALUES (:id,:project,:meeting_id,:since,:waiting_on,"
+                      ":instruction,:blocks,:verbatim,:status,:resolved_in,datetime('now'))", row)
+            new.append(row)
+    carried = [e for e in open_dependencies(project) if e["meeting_id"] != meeting_id]
+    return new, carried, closed, cost
