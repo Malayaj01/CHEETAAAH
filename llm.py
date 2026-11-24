@@ -25,9 +25,9 @@ def chat(messages, model, *, json_mode=False, max_tokens=8000, temperature=0, la
     base, key = _creds()
     body = {"model": model, "temperature": temperature, "max_tokens": max_tokens,
             "messages": messages}
-    if reasoning:
+    if reasoning and ("anthropic" in model or "claude" in model):
         # Claude via the gateway otherwise spends the whole budget thinking on long
-        # transcripts and returns no text (finish_reason=length, reasoning_tokens=max).
+        # transcripts and returns no text. Gemini endpoints reject the parameter.
         body["reasoning"] = {"effort": reasoning}
     if json_mode:
         body["response_format"] = {"type": "json_object"}

@@ -3,6 +3,7 @@
 State is written to <meeting dir>/status.json at every step so a crash is
 visible and resumable, and the web page can poll it."""
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -17,7 +18,8 @@ import mom
 import notify
 import providers
 
-TRANSCRIBER = pathlib.Path("/mnt/c/Users/Imart/Desktop/Issues/proposal/transcribe.py")
+TRANSCRIBER = pathlib.Path(os.environ.get(
+    "CHEETAAAH_TRANSCRIBER", config.HERE.parent / "proposal" / "transcribe.py"))
 AUDIO = {".aac", ".m4a", ".mp3", ".wav", ".ogg", ".opus", ".mp4", ".webm", ".3gp", ".amr"}
 
 
